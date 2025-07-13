@@ -1,5 +1,6 @@
 openai
 pyautogui
+opencv-python
 Pillow
 python-dotenv
-opencv-python
+pywin32

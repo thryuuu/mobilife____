@@ -1,125 +1,92 @@
 import os
-import io
-import base64
-import random
-import datetime
-import time
-from PIL import Image
-import pyautogui
 import cv2
 import numpy as np
-import win32gui
-import win32ui
-import win32con
-from openai import OpenAI
+import pyautogui
+import random
+import time
+from PIL import Image
+from util import capture_window_base64
+import openai
 
-client = OpenAI()
-CACHE_DIR = "button_cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
+client = openai.OpenAI()
 
-def capture_screen(window_name="마비노기 모바일"):
-    hwnd = win32gui.FindWindow(None, window_name)
-    if hwnd == 0:
-        raise Exception(f"[❌] 창 '{window_name}'을 찾을 수 없습니다.")
+def image_exists(filename):
+    path = os.path.join("button_cache", filename)
+    return os.path.exists(path)
 
-    left, top, right, bottom = win32gui.GetClientRect(hwnd)
-    width = right - left
-    height = bottom - top
+def smart_find_and_click(filename, fallback=None, label="버튼"):
+    screen = capture_window_base64()
+    template_path = os.path.join("button_cache", filename)
 
-    hwndDC = win32gui.GetWindowDC(hwnd)
-    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-    saveDC = mfcDC.CreateCompatibleDC()
+    if os.path.exists(template_path):
+        coords = find_image_on_screen(screen, template_path)
+        if coords:
+            click_center(coords)
+            return coords
 
-    saveBitMap = win32ui.CreateBitmap()
-    saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-    saveDC.SelectObject(saveBitMap)
-    saveDC.BitBlt((0, 0), width, height, mfcDC, 0, 0, win32con.SRCCOPY)
+    coords = gpt_find_button_region(screen, label)
+    if coords:
+        save_button_image(screen, coords, template_path)
+        click_center(coords)
+        return coords
 
-    bmpinfo = saveBitMap.GetInfo()
-    bmpstr = saveBitMap.GetBitmapBits(True)
-
-    img = Image.frombuffer("RGB", (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
-                           bmpstr, 'raw', 'BGRX', 0, 1)
-
-    win32gui.DeleteObject(saveBitMap.GetHandle())
-    saveDC.DeleteDC()
-    mfcDC.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwndDC)
-
-    return img
-
-def save_failure_screenshot(label):
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("screenshots", exist_ok=True)
-    path = f"screenshots/missing_{label}_{timestamp}.png"
-    screen = capture_screen()
-    screen.save(path)
-    print(f"[❌] 버튼 '{label}' 탐색 실패 - 스크린샷 저장됨: {path}")
-    return path
-
-def gpt_find_button_region(image: Image.Image, label: str):
-    try:
-        print(f"[GPT Vision] 버튼 '{label}' 탐색 중...")
-        image_bytes = io.BytesIO()
-        image.save(image_bytes, format="PNG")
-        image_bytes.seek(0)
-        response = client.chat.completions.create(
-            model="gpt-4-vision-preview",
-            max_tokens=50,
-            messages=[
-                {"role": "system", "content": "다음 UI 버튼을 찾고 좌표를 반환하세요."},
-                {"role": "user", "content": f"이 스크린샷에서 '{label}' 버튼의 좌상단(x, y), 우하단(x, y) 좌표를 알려줘."},
-                {"role": "user", "content": {"image": image_bytes.getvalue(), "type": "image/png"}},
-            ]
-        )
-        content = response.choices[0].message.content
-        print(f"[GPT 응답] {content}")
-        coords = [int(num) for num in content.replace("(", "").replace(")", "").replace(",", "").split() if num.isdigit()]
-        return tuple(coords[:4]) if len(coords) == 4 else None
-    except Exception as e:
-        print(f"[GPT Vision 오류] {e}")
-        return None
-
-def smart_find_and_click(filename: str, fallback: str = None, label: str = None, threshold=0.75, retry_on_fail=False):
-    attempts = 3 if retry_on_fail else 1
-    for attempt in range(attempts):
-        screen = capture_screen()
-        screen_np = np.array(screen)
-
-        if fallback:
-            fallback_path = os.path.join(CACHE_DIR, fallback)
-            if os.path.exists(fallback_path):
-                template = cv2.imread(fallback_path, cv2.IMREAD_COLOR)
-                screen_cv = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-                res = cv2.matchTemplate(screen_cv, template, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= threshold:
-                    h, w = template.shape[:2]
-                    center = (max_loc[0] + w // 2 + random.randint(-2, 2), max_loc[1] + h // 2 + random.randint(-2, 2))
-                    pyautogui.click(center)
-                    print(f"[✅] fallback 이미지 클릭: {fallback} at {center}")
-                    return center
-
-        if label:
-            coords = gpt_find_button_region(screen, label)
+    if fallback:
+        fallback_path = os.path.join("button_cache", fallback)
+        if os.path.exists(fallback_path):
+            coords = find_image_on_screen(screen, fallback_path)
             if coords:
-                x1, y1, x2, y2 = coords
-                center_x = (x1 + x2) // 2 + random.randint(-2, 2)
-                center_y = (y1 + y2) // 2 + random.randint(-2, 2)
-                pyautogui.click(center_x, center_y)
-                print(f"[✅] GPT 클릭: {label} at ({center_x}, {center_y})")
-                return (center_x, center_y)
-        time.sleep(1)
-    save_failure_screenshot(label or filename)
+                click_center(coords)
+                return coords
     return None
 
-def find_on_screen(filename, threshold=0.8):
-    screen = np.array(capture_screen())
-    screen_cv = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
-    path = os.path.join(CACHE_DIR, filename)
-    if not os.path.exists(path):
-        return False
-    template = cv2.imread(path, cv2.IMREAD_COLOR)
-    res = cv2.matchTemplate(screen_cv, template, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, _ = cv2.minMaxLoc(res)
-    return max_val >= threshold
+def gpt_find_button_region(base64_img, label):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "화면에서 UI 버튼을 찾아서 영역을 알려주세요."},
+                {"role": "user", "content": f"이 이미지에서 '{label}' 버튼의 영역을 찾아줘."},
+                {"role": "user", "image": {"image": base64_img, "detail": "low"}}
+            ],
+            max_tokens=300
+        )
+        coords = parse_response_coords(response.choices[0].message.content)
+        return coords
+    except Exception as e:
+        print(f"[GPT Vision 실패]: {e}")
+        return None
+
+def parse_response_coords(text):
+    import re
+    match = re.search(r"\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", text)
+    if match:
+        return tuple(map(int, match.groups()))
+    return None
+
+def save_button_image(base64_img, coords, path):
+    from PIL import Image
+    import base64, io
+    img_data = base64.b64decode(base64_img)
+    img = Image.open(io.BytesIO(img_data))
+    crop = img.crop(coords)
+    crop.save(path)
+
+def find_image_on_screen(base64_img, template_path):
+    import base64, io
+    from PIL import Image
+    screenshot = Image.open(io.BytesIO(base64.b64decode(base64_img)))
+    screen_np = np.array(screenshot)
+    template = cv2.imread(template_path)
+    res = cv2.matchTemplate(screen_np, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    if max_val > 0.8:
+        h, w = template.shape[:2]
+        return (max_loc[0], max_loc[1], max_loc[0]+w, max_loc[1]+h)
+    return None
+
+def click_center(coords):
+    x1, y1, x2, y2 = coords
+    x = int((x1 + x2) / 2 + random.randint(-3, 3))
+    y = int((y1 + y2) / 2 + random.randint(-3, 3))
+    pyautogui.moveTo(x, y, duration=0.2)
+    pyautogui.click()
