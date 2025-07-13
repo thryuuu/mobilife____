@@ -1,6 +1,8 @@
 openai
+python-dotenv
 pyautogui
 opencv-python
-Pillow
-python-dotenv
+pillow
+numpy
 pywin32
+pytesseract

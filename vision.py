@@ -5,9 +5,12 @@ import pyautogui
 import random
 import time
 from PIL import Image
-from util import capture_window_base64, get_game_window_rect
+from util import capture_window_base64, capture_window_image, get_game_window_rect
 import openai
 from dotenv import load_dotenv
+import pytesseract
+import base64
+import io
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -21,18 +24,27 @@ def smart_find_and_click(filename, fallback=None, label="버튼"):
     screen = capture_window_base64()
     template_path = os.path.join("button_cache", filename)
 
+    # 1. 템플릿 이미지로 먼저 탐색
     if os.path.exists(template_path):
         coords = find_image_on_screen(screen, template_path)
         if coords:
             click_center(coords)
             return coords
 
+    # 2. GPT Vision 사용
     coords = gpt_find_button_region(screen, label)
     if coords:
         save_button_image(screen, coords, template_path)
         click_center(coords)
         return coords
 
+    # 3. OCR로 텍스트 기반 탐색 보완
+    coords = ocr_find_text_coordinates(label)
+    if coords:
+        click_center(coords)
+        return coords
+
+    # 4. fallback 템플릿으로 시도
     if fallback:
         fallback_path = os.path.join("button_cache", fallback)
         if os.path.exists(fallback_path):
@@ -40,6 +52,8 @@ def smart_find_and_click(filename, fallback=None, label="버튼"):
             if coords:
                 click_center(coords)
                 return coords
+
+    print(f"❌ '{label}' 버튼 탐색 실패")
     return None
 
 def gpt_find_button_region(base64_img, label):
@@ -91,34 +105,36 @@ def parse_response_coords(text):
     return None
 
 def save_button_image(base64_img, coords, path):
-    from PIL import Image
-    import base64, io
     img_data = base64.b64decode(base64_img)
     img = Image.open(io.BytesIO(img_data))
     crop = img.crop(coords)
     crop.save(path)
 
 def find_image_on_screen(base64_img, template_path):
-    import base64, io
-    from PIL import Image
-
-    # 현재 화면
     screenshot = Image.open(io.BytesIO(base64.b64decode(base64_img))).convert("RGB")
     screen_np = np.array(screenshot)
+    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
 
-    # 버튼 이미지
     template_img = Image.open(template_path).convert("RGB")
     template_np = np.array(template_img)
+    template_gray = cv2.cvtColor(template_np, cv2.COLOR_RGB2GRAY)
 
-    # 다양한 크기로 템플릿 리사이즈 후 matchTemplate 시도
+    best_score = -1
+    best_coords = None
+
     for scale in [1.0, 0.95, 1.05, 0.9, 1.1, 0.85, 1.15]:
-        resized_template = cv2.resize(template_np, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        res = cv2.matchTemplate(screen_np, resized_template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        if max_val > 0.85:
-            h, w = resized_template.shape[:2]
-            return (max_loc[0], max_loc[1], max_loc[0] + w, max_loc[1] + h)
+        resized_template = cv2.resize(template_gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        res = cv2.matchTemplate(screen_gray, resized_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
+        print(f"[matchTemplate] scale={scale:.2f}, match score={max_val:.4f}")
+        if max_val > best_score:
+            best_score = max_val
+            h, w = resized_template.shape
+            best_coords = (max_loc[0], max_loc[1], max_loc[0] + w, max_loc[1] + h)
+
+    if best_score > 0.6:  # 스코어 기준 조정 가능
+        return best_coords
     return None
 
 def click_center(coords):
@@ -135,3 +151,12 @@ def click_center(coords):
         print("게임 창 위치를 찾을 수 없습니다. 화면 전체 기준으로 클릭합니다.")
         pyautogui.moveTo(x, y, duration=0.2)
         pyautogui.click()
+
+def ocr_find_text_coordinates(keyword):
+    img = capture_window_image()
+    ocr_data = pytesseract.image_to_data(img, lang="kor+eng", output_type=pytesseract.Output.DICT)
+    for i, text in enumerate(ocr_data['text']):
+        if keyword in text:
+            x, y, w, h = ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i]
+            return (x, y, x + w, y + h)
+    return None
