@@ -7,8 +7,11 @@ import time
 from PIL import Image
 from util import capture_window_base64
 import openai
+from dotenv import load_dotenv
 
-client = openai.OpenAI()
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+client = openai.OpenAI(api_key=api_key)
 
 def image_exists(filename):
     path = os.path.join("button_cache", filename)
@@ -40,6 +43,13 @@ def smart_find_and_click(filename, fallback=None, label="버튼"):
     return None
 
 def gpt_find_button_region(base64_img, label):
+    if not base64_img or base64_img.strip() == "":
+        print("❌ GPT Vision 요청 실패: base64_img 값이 비어 있습니다.")
+        return None
+    if not label or not isinstance(label, str):
+        print("❌ GPT Vision 요청 실패: label이 유효하지 않습니다.")
+        return None
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
