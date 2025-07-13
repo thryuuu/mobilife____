@@ -1,0 +1,7 @@
+openai
+opencv-python
+pyautogui
+Pillow
+python-dotenv
+numpy
+pywin32
