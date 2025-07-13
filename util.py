@@ -34,3 +34,10 @@ def capture_window_base64(window_name="마비노기 모바일"):
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()
+
+def get_game_window_rect(window_name="마비노기 모바일"):
+    hwnd = win32gui.FindWindow(None, window_name)
+    if hwnd == 0:
+        return None
+    rect = win32gui.GetWindowRect(hwnd)
+    return rect  # (left, top, right, bottom)
